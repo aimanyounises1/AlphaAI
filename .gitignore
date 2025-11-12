@@ -1,0 +1,36 @@
+# Environment variables
+.env
+.env.local
+.env.*.local
+.env.bak
+
+# Directories
+.chainlit/
+.idea/
+__pycache__/
+cache/
+certbot/
+lancedb/
+lib/
+output/
+
+# Files
+*.pdf
+
+# Python
+*.pyc
+*.pyo
+*.pyd
+*.db
+
+# Logs
+*.log
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

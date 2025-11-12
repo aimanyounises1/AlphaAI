@@ -1,0 +1,132 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Set proxy environment variables
+ENV HTTP_PROXY=""
+ENV HTTPS_PROXY=""
+ENV NO_PROXY=localhost,127.0.0.1,.corp.amdocs.com
+
+# Configure apt to use the proxy and disable https
+RUN echo 'Acquire::http::Proxy """";' > /etc/apt/apt.conf.d/proxy.conf && \
+    echo 'Acquire::https::Proxy """";' >> /etc/apt/apt.conf.d/proxy.conf && \
+    echo 'Acquire::https::Verify-Peer "false";' >> /etc/apt/apt.conf.d/proxy.conf && \
+    echo 'Acquire::https::Verify-Host "false";' >> /etc/apt/apt.conf.d/proxy.conf && \
+    echo 'Acquire::AllowInsecureRepositories "true";' >> /etc/apt/apt.conf.d/proxy.conf && \
+    echo 'Acquire::AllowDowngradeToInsecureRepositories "true";' >> /etc/apt/apt.conf.d/proxy.conf
+
+# Create sources.list with HTTP repositories
+RUN echo "deb http://deb.debian.org/debian bullseye main" > /etc/apt/sources.list && \
+    echo "deb http://deb.debian.org/debian-security bullseye-security main" >> /etc/apt/sources.list && \
+    echo "deb http://deb.debian.org/debian bullseye-updates main" >> /etc/apt/sources.list
+
+# Set DNS servers
+RUN echo "nameserver 8.8.8.8" > /etc/resolv.conf && \
+    echo "nameserver 8.8.4.4" >> /etc/resolv.conf
+
+# Update and install ca-certificates
+RUN apt-get update -o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false && \
+    apt-get install -y ca-certificates && \
+    update-ca-certificates
+
+# Configure pip to use the proxy
+RUN mkdir -p ~/.pip && \
+    echo "[global]" > ~/.pip/pip.conf && \
+    echo "proxy = $HTTP_PROXY" >> ~/.pip/pip.conf && \
+    echo "trusted-host = pypi.org files.pythonhosted.org" >> ~/.pip/pip.conf
+
+# Install system dependencies
+RUN apt-get update -o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false && \
+    apt-get install -y \
+    build-essential \
+    git \
+    cmake \
+    libgmp-dev \
+    libmpfr-dev \
+    libboost-all-dev \
+    g++ \
+    gfortran \
+    libopenblas-dev \
+    liblapack-dev \
+    curl \
+    dnsutils \
+    iputils-ping \
+    net-tools \
+    gnupg \
+    wget \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Copy requirements file
+COPY requirements.txt ./
+
+# Upgrade pip and setuptools
+RUN pip install --upgrade pip setuptools wheel
+
+# Install graphrag and its dependencies first
+RUN pip install --no-cache-dir networkx==3.3 python-louvain==0.16 pandas==2.2.2 numpy==1.26.4
+RUN pip install --no-cache-dir graphrag==0.1.1
+
+# Install chainlit separately
+RUN pip install --no-cache-dir chainlit==1.1.306
+
+# Install the rest of the Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install additional dependencies for Jira, Perforce, etc.
+RUN pip install --no-cache-dir jira python-dotenv supabase
+
+# Install tiktoken
+RUN pip install tiktoken
+
+# Create the .tiktoken directory and download the tiktoken file
+RUN mkdir -p /root/.tiktoken && \
+    wget --no-check-certificate https://openaipublic.blob.core.windows.net/encodings/cl100k_base.tiktoken -O /root/.tiktoken/9b5ad71b2ce5302211f9c61530b329a4922fc6a4
+
+# Copy project files
+COPY . .
+
+# Replace specific GraphRAG files
+RUN if [ -f "/app/utils/openai_embeddings_llm.py" ]; then \
+        cp /app/utils/openai_embeddings_llm.py /usr/local/lib/python3.12/site-packages/graphrag/llm/openai/openai_embeddings_llm.py; \
+        echo "Replaced openai_embeddings_llm.py"; \
+    else \
+        echo "utils/openai_embeddings_llm.py not found. Skipping replacement."; \
+    fi && \
+    if [ -f "/app/utils/embedding.py" ]; then \
+        cp /app/utils/embedding.py /usr/local/lib/python3.12/site-packages/graphrag/query/llm/oai/embedding.py; \
+        echo "Replaced embedding.py"; \
+    else \
+        echo "utils/embedding.py not found. Skipping replacement."; \
+    fi
+
+# Verify that files have been replaced
+RUN echo "Verifying replaced GraphRAG files:" && \
+    echo "openai_embeddings_llm.py:" && head -n 5 /usr/local/lib/python3.12/site-packages/graphrag/llm/openai/openai_embeddings_llm.py && \
+    echo "embedding.py:" && head -n 5 /usr/local/lib/python3.12/site-packages/graphrag/query/llm/oai/embedding.py
+
+# Create start.sh
+RUN echo '#!/bin/bash' > /app/start.sh && \
+    echo 'export PYTHONPATH="/app:$PYTHONPATH"' >> /app/start.sh && \
+    echo 'litellm --model ollama/mistral-large:latest --api_base $OLLAMA_API_BASE --host 0.0.0.0 --port $LITELLM_PORT --detailed_debug &' >> /app/start.sh && \
+    echo 'if [ -f "/app/appUI.py" ]; then' >> /app/start.sh && \
+    echo '    chainlit run /app/appUI.py --host 0.0.0.0 --port $CHAINLIT_PORT &' >> /app/start.sh && \
+    echo 'else' >> /app/start.sh && \
+    echo '    echo "Error: /app/appUI.py not found!"' >> /app/start.sh && \
+    echo '    exit 1' >> /app/start.sh && \
+    echo 'fi' >> /app/start.sh && \
+    echo 'wait' >> /app/start.sh
+
+# Make start.sh executable
+RUN chmod +x /app/start.sh
+RUN chmod +x /app/start_services.sh
+
+# Set the entry point
+ENTRYPOINT ["/bin/bash", "/app/start.sh"]
+
+# Expose the necessary ports
+EXPOSE 8000 8002

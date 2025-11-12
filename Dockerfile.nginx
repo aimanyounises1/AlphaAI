@@ -1,0 +1,26 @@
+FROM nginx:alpine AS builder
+
+# Copy the generate_ssl_cert.sh script
+COPY generate_ssl_cert.sh /usr/local/bin/generate_ssl_cert.sh
+RUN chmod +x /usr/local/bin/generate_ssl_cert.sh
+
+FROM nginx:alpine
+
+# Create the directory for SSL certificates
+RUN mkdir -p /etc/nginx/ssl
+
+# Copy the SSL certificates
+COPY ssl/intellicore.amdocs.com.crt /etc/nginx/ssl/intellicore.amdocs.com.crt
+COPY ssl/intellicore.amdocs.com.key /etc/nginx/ssl/intellicore.amdocs.com.key
+
+# Copy NGINX configuration
+COPY nginx.conf /etc/nginx/nginx.conf
+
+# Copy the generate_ssl_cert.sh script from the builder stage
+COPY --from=builder /usr/local/bin/generate_ssl_cert.sh /usr/local/bin/generate_ssl_cert.sh
+
+# Expose ports
+EXPOSE 80 443
+
+# Ensure the SSL certificate is generated before starting NGINX
+CMD ["/bin/sh", "-c", "/usr/local/bin/generate_ssl_cert.sh && nginx -g 'daemon off;'"]
